@@ -68,7 +68,7 @@ def extract_text_or_empty(el):
         return ""
 
 
-def scrape_range(start: int, end: int, headless: bool = True) -> None:
+def scrape_range(start: int, end: int, headless: bool = True, link_retries: int = 3, link_retry_wait: float = 0.5) -> None:
     ensure_out_dir()
 
     with sync_playwright() as p:
@@ -85,47 +85,66 @@ def scrape_range(start: int, end: int, headless: bool = True) -> None:
 
             results: List[List[str]] = []
             for url in links:
-                try:
-                    print(f"Visiting {url}")
-                    page.goto(url, wait_until="networkidle")
-                except PlaywrightTimeoutError:
-                    print(f"Timeout loading {url}. Skipping link.")
-                    results.append([url, "", "", ""])
-                    continue
-
-                # title
-                try:
-                    el = page.query_selector(TITLE_SELECTOR)
-                    title = extract_text_or_empty(el) if el else ""
-                except Exception:
-                    title = ""
-
-                # genres (may be multiple)
-                try:
-                    genre_els = page.query_selector_all(GENRE_SELECTOR)
-                    genres = [extract_text_or_empty(g) for g in genre_els]
-                    genres_str = ";".join([g for g in genres if g])
-                except Exception:
-                    genres_str = ""
-
-                # go to /descs for description
-                desc_url = url.rstrip("/") + "/descs"
+                title = ""
+                genres_str = ""
                 desc_text = ""
-                try:
-                    page.goto(desc_url, wait_until="networkidle")
-                    # small delay to allow text to render
-                    time.sleep(0.3)
-                    desc_el = page.query_selector(DESC_SELECTOR)
-                    desc_text = extract_text_or_empty(desc_el) if desc_el else ""
-                    desc_text = desc_text.replace("\n", " ").replace("\r", " ").strip()
-                except PlaywrightTimeoutError:
-                    print(f"Timeout loading desc page for {url}")
-                except Exception:
-                    pass
+
+                attempt = 0
+                success = False
+                while attempt <= link_retries:
+                    try:
+                        print(f"Visiting {url} (attempt {attempt+1})")
+                        page.goto(url, wait_until="networkidle")
+                    except PlaywrightTimeoutError:
+                        print(f"Timeout loading {url} (attempt {attempt+1})")
+                        attempt += 1
+                        time.sleep(link_retry_wait)
+                        continue
+
+                    # title
+                    try:
+                        el = page.query_selector(TITLE_SELECTOR)
+                        title = extract_text_or_empty(el) if el else ""
+                    except Exception:
+                        title = ""
+
+                    # genres (may be multiple)
+                    try:
+                        genre_els = page.query_selector_all(GENRE_SELECTOR)
+                        genres = [extract_text_or_empty(g) for g in genre_els]
+                        genres_str = ";".join([g for g in genres if g])
+                    except Exception:
+                        genres_str = ""
+
+                    # go to /descs for description
+                    try:
+                        desc_url = url.rstrip("/") + "/descs"
+                        page.goto(desc_url, wait_until="networkidle")
+                        # small delay to allow text to render
+                        time.sleep(0.3)
+                        desc_el = page.query_selector(DESC_SELECTOR)
+                        desc_text = extract_text_or_empty(desc_el) if desc_el else ""
+                        desc_text = desc_text.replace("\n", " ").replace("\r", " ").strip()
+                    except PlaywrightTimeoutError:
+                        print(f"Timeout loading desc page for {url} (attempt {attempt+1})")
+                    except Exception:
+                        pass
+
+                    # if we have title and genres and desc, count as success
+                    if title and genres_str and desc_text:
+                        success = True
+                        break
+
+                    attempt += 1
+                    print(f"Retrying {url} after {link_retry_wait}s...")
+                    time.sleep(link_retry_wait)
+
+                if not success:
+                    print(f"Failed to extract details for {url} after {link_retries} retries")
 
                 results.append([url, title, genres_str, desc_text])
                 # polite delay
-                time.sleep(0.3)
+                time.sleep(0.4)
 
             write_page_results(page_num, results)
             print(f"Wrote {len(results)} records to data_page{page_num}.csv")
@@ -141,9 +160,17 @@ def main():
     parser.add_argument("--start", type=int, default=1)
     parser.add_argument("--end", type=int, default=1000)
     parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--link-retries", type=int, default=3, help="Retries per link when fields are missing")
+    parser.add_argument("--link-retry-wait", type=float, default=0.5, help="Seconds to wait between link retries")
     args = parser.parse_args()
 
-    scrape_range(args.start, args.end, headless=not args.headed)
+    scrape_range(
+        args.start,
+        args.end,
+        headless=not args.headed,
+        link_retries=args.link_retries,
+        link_retry_wait=args.link_retry_wait,
+    )
 
 
 if __name__ == "__main__":
