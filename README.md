@@ -1,6 +1,6 @@
 ### To run the code using conda env
 ```bash
-conda env -n <name> python=3.12
+conda create -n <name> python=3.12
 conda activate <name>
 conda install jupyter ipykernel pandas matplotlib transformers sacremoses scikit-learn
 ```
